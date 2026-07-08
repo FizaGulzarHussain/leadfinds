@@ -914,13 +914,48 @@ def compute_fastsite_projection(breakdown: dict) -> dict:
     CACHE_HIT_RATE = 0.90
     # Edge cache hit serves in ~8-12ms vs origin
     EDGE_CACHE_HIT_MS = 10
-    # LCP improvement: Edge Cache + edge delivery typically improves LCP 40-70%
-    LCP_IMPROVEMENT = 0.55
-    # FCP improvement: 35-60% for cached assets
-    FCP_IMPROVEMENT = 0.50
-    # PageSpeed score uplift: typically +25 to +45 points from caching alone
+
+    # LCP improvement: Edge Cache + edge delivery typically improves LCP 40-70%.
+    # The *actual* achievable improvement depends on how bad the current LCP
+    # is — a site already near Google's "Good" threshold (2.5s) has little
+    # room left to gain, while a very slow site (8s+) has plenty of headroom
+    # and edge caching removes almost all of the origin-server wait. We scale
+    # LCP_IMPROVEMENT_MIN/MAX by where the current LCP falls between those two
+    # anchors so every audit gets a number tied to its own metrics rather than
+    # a flat 55%.
+    LCP_IMPROVEMENT_MIN = 0.40
+    LCP_IMPROVEMENT_MAX = 0.70
+    LCP_GOOD_MS = 2500   # Google's "Good" LCP threshold — little headroom left
+    LCP_POOR_MS = 8000   # sites this slow (or worse) get the max assumed gain
+
+    lcp_headroom_ratio = min(max((lcp_ms - LCP_GOOD_MS) / (LCP_POOR_MS - LCP_GOOD_MS), 0), 1)
+    LCP_IMPROVEMENT = LCP_IMPROVEMENT_MIN + (LCP_IMPROVEMENT_MAX - LCP_IMPROVEMENT_MIN) * lcp_headroom_ratio
+
+    # FCP improvement: 35-60% for cached assets, scaled the same way against
+    # Google's "Good" FCP threshold (1.8s) and a "very poor" anchor (6s).
+    FCP_IMPROVEMENT_MIN = 0.35
+    FCP_IMPROVEMENT_MAX = 0.60
+    FCP_GOOD_MS = 1800
+    FCP_POOR_MS = 6000
+
+    fcp_headroom_ratio = min(max((fcp_ms - FCP_GOOD_MS) / (FCP_POOR_MS - FCP_GOOD_MS), 0), 1)
+    FCP_IMPROVEMENT = FCP_IMPROVEMENT_MIN + (FCP_IMPROVEMENT_MAX - FCP_IMPROVEMENT_MIN) * fcp_headroom_ratio
+
+    # PageSpeed score uplift: typically +25 to +45 points from caching alone,
+    # but the *actual* achievable gain always shrinks as the current score
+    # approaches 100 (there's simply less headroom left to gain). We treat
+    # PERF_SCORE_UPLIFT_MIN/MAX as the uplift for a "typical" mid-scoring
+    # site (perf_score ~50) and scale them by the remaining headroom
+    # (100 - perf_score) so a site that already scores well doesn't get
+    # promised the same flat +45 as a site that scores 20.
     PERF_SCORE_UPLIFT_MIN = 25
     PERF_SCORE_UPLIFT_MAX = 45
+    _BASELINE_HEADROOM = 100 - 50  # headroom implied by the constants above
+
+    headroom = max(100 - perf_score, 0)
+    headroom_ratio = min(headroom / _BASELINE_HEADROOM, 1.5) if _BASELINE_HEADROOM else 1
+    scaled_uplift_min = round(PERF_SCORE_UPLIFT_MIN * headroom_ratio)
+    scaled_uplift_max = round(PERF_SCORE_UPLIFT_MAX * headroom_ratio)
 
     projected_ttfb = EDGE_CACHE_HIT_MS if ttfb > 100 else ttfb
     ttfb_speedup_pct = round((1 - projected_ttfb / max(ttfb, 1)) * 100)
@@ -929,8 +964,14 @@ def compute_fastsite_projection(breakdown: dict) -> dict:
     projected_lcp = round(lcp_ms * (1 - LCP_IMPROVEMENT))
     projected_fcp = round(fcp_ms * (1 - FCP_IMPROVEMENT))
 
-    perf_after_min = min(perf_score + PERF_SCORE_UPLIFT_MIN, 98)
-    perf_after_max = min(perf_score + PERF_SCORE_UPLIFT_MAX, 100)
+    # Clamp projected scores to the site's actual headroom (never above 98/100),
+    # then derive the *real* point gain from the clamped result — this is the
+    # number that should be shown anywhere a "+N pts" claim is made, so the
+    # displayed gain always matches what's actually being projected.
+    perf_after_min = min(perf_score + scaled_uplift_min, 98)
+    perf_after_max = min(perf_score + scaled_uplift_max, 100)
+    perf_gain_min = max(perf_after_min - perf_score, 0)
+    perf_gain_max = max(perf_after_max - perf_score, 0)
 
     # Bandwidth savings from compression + caching
     compressed_kb = round(page_size_kb * 0.30)  # brotli ~70% reduction
@@ -965,8 +1006,8 @@ def compute_fastsite_projection(breakdown: dict) -> dict:
             "lcp_improvement_pct":     round(LCP_IMPROVEMENT * 100),
             "fcp_improvement_pct":     round(FCP_IMPROVEMENT * 100),
             "bandwidth_saving_pct":    bandwidth_saving_pct,
-            "perf_score_gain_min":     PERF_SCORE_UPLIFT_MIN,
-            "perf_score_gain_max":     PERF_SCORE_UPLIFT_MAX,
+            "perf_score_gain_min":     perf_gain_min,
+            "perf_score_gain_max":     perf_gain_max,
             "conversion_uplift_pct":   conversion_uplift_pct,
             "bounce_rate_reduction_pct": bounce_rate_reduction,
             "load_time_saved_s":       load_time_saved_s,

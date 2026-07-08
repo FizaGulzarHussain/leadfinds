@@ -1208,8 +1208,8 @@ _PREVIEW_TTL_SECONDS = 3600  # fast.site edge previews are shown as live for 1 h
 
 
 def _record_preview(url: str, result, name: str | None = None) -> None:
-    """Track a live fast.site edge preview so it shows up in the Previews tab
-    with a link valid for one hour, alongside its audit report."""
+    """Track a live fast.site edge preview so it shows up next to this site
+    in the History view with a link valid for one hour."""
     preview_url = getattr(result, "preview_url", "") if result is not None else ""
     if not url or not preview_url:
         return
@@ -1229,26 +1229,7 @@ def _record_preview(url: str, result, name: str | None = None) -> None:
         "inconclusive":  bool(getattr(result, "inconclusive", False)) if ok else False,
         "perf_origin":   getattr(result, "perf_score_origin", None) if ok else None,
         "perf_preview":  getattr(result, "perf_score_preview", None) if ok else None,
-        "ttfb_improvement_pct": getattr(result, "ttfb_improvement_pct", None) if ok else None,
-        "score_improvement":    getattr(result, "score_improvement", None) if ok else None,
     }
-
-
-def _preview_one_liner(preview: dict | None) -> str:
-    """A single, score-free sentence describing what a live preview improved —
-    used in the History tab so reps see the headline win without a raw score."""
-    if not preview:
-        return ""
-    if preview.get("ok") is False:
-        return _t("Preview link still live", "Vorschau-Link weiterhin aktiv")
-    if preview.get("inconclusive"):
-        return _t("Live preview ready — timing comparison inconclusive",
-                   "Live-Vorschau bereit — Zeitvergleich nicht eindeutig")
-    ttfb = preview.get("ttfb_improvement_pct")
-    if ttfb:
-        return _t(f"⚡ {ttfb}% faster server response with edge caching",
-                   f"⚡ {ttfb}% schnellere Serverantwort durch Edge-Caching")
-    return _t("Live preview ready", "Live-Vorschau bereit")
 
 
 def _remove_preview(url: str) -> None:
@@ -1275,6 +1256,24 @@ def _active_previews() -> list[dict]:
     if len(alive) != len(previews):
         st.session_state["previews"] = alive
     return sorted(alive.values(), key=lambda p: p.get("created_at", ""), reverse=True)
+
+
+def _preview_one_liner(preview: dict | None) -> str:
+    """A single, score-free sentence describing what a live preview improved —
+    used as a compact caption next to the preview link in History."""
+    if not preview:
+        return ""
+    if preview.get("ok") is False:
+        return _t("Preview link still live", "Vorschau-Link weiterhin aktiv")
+    if preview.get("inconclusive"):
+        return _t("Live preview ready — timing comparison inconclusive",
+                   "Live-Vorschau bereit — Zeitvergleich nicht eindeutig")
+    perf_origin  = preview.get("perf_origin")
+    perf_preview = preview.get("perf_preview")
+    if perf_origin is not None and perf_preview is not None:
+        return _t(f"PageSpeed {perf_origin} → {perf_preview}",
+                   f"PageSpeed {perf_origin} → {perf_preview}")
+    return _t("Live preview ready", "Live-Vorschau bereit")
 
 # ─── Lead generation tools ────────────────────────────────────────────────────
 try:
@@ -1800,6 +1799,9 @@ def _render_detail(url: str) -> None:
         except Exception:
             st.caption(_t("PDF unavailable", "PDF nicht verfügbar"))
     with pcol2:
+        _safe_url_key = url.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
+        _preview_session_key = f"preview_result_{_safe_url_key}"
+        _cached_preview = st.session_state.get(_preview_session_key)
         if PREVIEW_API_AVAILABLE and st.button(
             f"🌐 {_t('Generate live preview','Live-Vorschau erstellen')}",
             key="detail_preview", use_container_width=True):
@@ -1811,8 +1813,28 @@ def _render_detail(url: str) -> None:
                 with st.spinner(_t("Measuring on fast.site edge…", "Messung am fast.site-Edge…")):
                     _res = run_preview_measurement(url=url, api_key=_pk,
                                                    progress_callback=lambda m: _ph.info(m))
+                _ph.empty()
+                st.session_state[_preview_session_key] = _res
                 _record_preview(url, _res, name=name)
-                render_preview_results(_res)
+                st.rerun()
+    if PREVIEW_API_AVAILABLE and _cached_preview is not None:
+        render_preview_results(_cached_preview)
+        if _cached_preview.ok and not _cached_preview.inconclusive:
+            st.success(
+                f"✅ **{_t('Real measurement complete','Echte Messung abgeschlossen')}** — "
+                f"TTFB {_t('improved by','verbessert um')} **{_cached_preview.ttfb_improvement_pct}%**, "
+                f"PageSpeed **{_cached_preview.perf_score_origin} → {_cached_preview.perf_score_preview}** "
+                f"(+{_cached_preview.score_improvement} {_t('pts','Punkte')}). "
+                f"[{_t('View live preview','Live-Vorschau ansehen')}]({_cached_preview.preview_url})"
+            )
+        if getattr(_cached_preview, "preview_url", ""):
+            if st.button(
+                f"🗑 {_t('Unpreview this site','Vorschau entfernen')}",
+                key=f"unpreview_detail_{_safe_url_key}",
+            ):
+                _remove_preview(url)
+                st.session_state.pop(_preview_session_key, None)
+                st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2019,21 +2041,19 @@ elif _view == "history":
             })
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-        # ── Live preview per company ────────────────────────────────────────
-        st.markdown(f"#### 🌐 {_t('Live preview', 'Live-Vorschau')}")
+        # ── Per-site live preview + report ────────────────────────────────────
+        st.markdown(f"#### 🌐 {_t('Live preview & reports','Live-Vorschau & Berichte')}")
+        _hist_preview_key = get_preview_api_key() if PREVIEW_API_AVAILABLE else None
         _previews_by_url = {p["url"]: p for p in _active_previews()}
         for i, e in enumerate(items):
             u    = e.get("url", "")
             name = e.get("business_name", u)
             with st.container():
-                pc1, pc2 = st.columns([2.3, 2.0])
-                with pc1:
-                    st.markdown(
-                        f'<div style="font-weight:700;color:#0F172A;font-size:0.92rem;">{_html_mod.escape(name)}</div>'
-                        f'<div style="font-size:0.78rem;color:#2563EB;">{_html_mod.escape(u)}</div>',
-                        unsafe_allow_html=True,
-                    )
-                with pc2:
+                hc1, hc2, hc3 = st.columns([2.2, 1.8, 1])
+                with hc1:
+                    st.markdown(f"**{name}**")
+                    st.caption(_domain(u))
+                with hc2:
                     _preview_for_url = _previews_by_url.get(u)
                     if _preview_for_url and _preview_for_url.get("preview_url"):
                         _one_liner = _preview_one_liner(_preview_for_url)
@@ -2045,37 +2065,39 @@ elif _view == "history":
                             f'{_html_mod.escape(_one_liner)}</div>',
                             unsafe_allow_html=True,
                         )
-                        if st.button(
-                            f"🗑 {_t('Unpreview this site', 'Vorschau entfernen')}",
-                            key=f"hist_unpreview_{i}_{u}",
-                        ):
+                        if st.button(f"🗑 {_t('Unpreview', 'Entfernen')}",
+                                     key=f"hist_unpreview_{i}", use_container_width=True):
                             _remove_preview(u)
                             st.rerun()
-                    else:
-                        _hist_preview_key = get_preview_api_key() if PREVIEW_API_AVAILABLE else None
+                    elif PREVIEW_API_AVAILABLE and _hist_preview_key:
                         _safe_hist_url = u.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
-                        if PREVIEW_API_AVAILABLE and _hist_preview_key:
-                            if st.button(
-                                f"🚀 {_t('Run preview', 'Vorschau starten')}",
-                                key=f"hist_run_preview_{i}_{_safe_hist_url}",
-                                use_container_width=True,
-                            ):
-                                _status_ph = st.empty()
-                                with st.spinner(_t("Provisioning edge preview…", "Edge-Vorschau wird bereitgestellt…")):
-                                    _hist_result = run_preview_measurement(
-                                        url=u, api_key=_hist_preview_key,
-                                        progress_callback=lambda m: _status_ph.info(m),
-                                    )
-                                _status_ph.empty()
-                                _record_preview(u, _hist_result, name=name)
-                                st.rerun()
-                        else:
-                            st.markdown(
-                                f'<div style="font-size:0.78rem;color:#94A3B8;">'
-                                f'{_t("No live preview yet", "Noch keine Live-Vorschau")}</div>',
-                                unsafe_allow_html=True,
-                            )
-                st.markdown("<div style='height:0.5rem;border-bottom:1px solid #E2E8F4;margin-bottom:0.5rem;'></div>", unsafe_allow_html=True)
+                        if st.button(f"🚀 {_t('Run preview', 'Vorschau starten')}",
+                                     key=f"hist_run_preview_{i}_{_safe_hist_url}",
+                                     use_container_width=True):
+                            _status_ph = st.empty()
+                            with st.spinner(_t("Provisioning edge preview…", "Edge-Vorschau wird bereitgestellt…")):
+                                _hist_result = run_preview_measurement(
+                                    url=u, api_key=_hist_preview_key,
+                                    progress_callback=lambda m: _status_ph.info(m),
+                                )
+                            _status_ph.empty()
+                            _record_preview(u, _hist_result, name=name)
+                            st.rerun()
+                    else:
+                        st.caption(_t("No live preview yet", "Noch keine Live-Vorschau"))
+                with hc3:
+                    try:
+                        _hist_pdf = generate_audit_pdf(e["audit"], lang=_LANG)
+                        _safe_name = u.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
+                        st.download_button(
+                            f"⬇ {_t('Report', 'Bericht')}",
+                            data=_hist_pdf, file_name=f"audit_{_safe_name}.pdf",
+                            mime="application/pdf", use_container_width=True,
+                            key=f"hist_pdf_{i}_{_safe_name}",
+                        )
+                    except Exception:
+                        st.caption(_t("Report unavailable", "Bericht nicht verfügbar"))
+                st.divider()
 
         if st.button(f"🗑 {_t('Clear history','Verlauf löschen')}", key="hist_clear"):
             st.session_state["history"] = {}
