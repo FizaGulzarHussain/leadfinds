@@ -83,28 +83,37 @@ def generate_cold_email(
     m = re.search(r"https?://(?:www\.)?([^/]+)", url)
     domain = m.group(1) if m else url
 
-    # Personalised opening based on worst metric
+    # Personalised opening based on worst metric. Every branch ties the speed
+    # problem back to Google search ranking / visibility — that's the hook a
+    # non-technical business owner actually cares about, not raw millisecond
+    # metrics on their own.
     if speed_score < 40:
         pain_point = (
             f"your site's server response time is critically slow "
-            f"({ttfb_ms}ms TTFB — ideal is under 200ms)" if ttfb_ms
-            else "your site has a critically slow server response time"
+            f"({ttfb_ms}ms TTFB — ideal is under 200ms), and Google treats slow "
+            f"sites like this as a negative ranking signal" if ttfb_ms
+            else "your site has a critically slow server response time, which "
+                 "Google treats as a negative ranking signal"
         )
-        cta_benefit = "cut load times by up to 10× with Edge Cache"
+        cta_benefit = "cut load times by up to 10× with Edge Cache — and climb back up the search rankings you're currently losing to faster competitors"
     elif performance_score < 40:
         pain_point = (
             f"your site is failing Google's Core Web Vitals "
-            f"(LCP of {lcp_ms/1000:.1f}s — Google's threshold is 2.5s)" if lcp_ms
-            else "your site is failing Google's Core Web Vitals thresholds"
+            f"(LCP of {lcp_ms/1000:.1f}s — Google's threshold is 2.5s). Core Web "
+            f"Vitals are a confirmed Google ranking factor, so this is quietly "
+            f"costing you search visibility" if lcp_ms
+            else "your site is failing Google's Core Web Vitals thresholds — a "
+                 "confirmed Google ranking factor that's quietly costing you "
+                 "search visibility"
         )
-        cta_benefit = "push your PageSpeed score from {perf} to 85+ in 24 hours"
+        cta_benefit = "push your PageSpeed score from {perf} to 85+ in 24 hours, so Google starts ranking you above slower competitors"
         cta_benefit = cta_benefit.format(perf=performance_score)
     elif overall_score < 60:
-        pain_point = f"your overall site health score is {overall_score}/100 — below the threshold where Google rewards you with better rankings"
-        cta_benefit = "improve your site's rankings and conversion rate without touching a line of code"
+        pain_point = f"your overall site health score is {overall_score}/100 — below the threshold where Google rewards you with better search rankings"
+        cta_benefit = "lift your search rankings and conversion rate without touching a line of code"
     else:
-        pain_point = f"your site scored {overall_score}/100 on our independent audit — there's meaningful room to improve speed and visibility"
-        cta_benefit = "squeeze extra performance out of your site with zero code changes"
+        pain_point = f"your site scored {overall_score}/100 on our independent audit — there's meaningful room to improve speed, search ranking and visibility"
+        cta_benefit = "squeeze extra performance and search visibility out of your site with zero code changes"
 
     cdn_note = ""
     if not has_cdn:
@@ -121,6 +130,8 @@ def generate_cold_email(
 Hi {greeting_name},
 
 I ran a quick independent performance audit on {domain} and noticed {pain_point}.{cdn_note}
+
+This matters beyond just user experience: Google uses page speed and Core Web Vitals as direct ranking factors, so a slow site quietly pushes you down the search results — and below faster competitors — for the exact terms your customers are searching.
 
 Fast.site can {cta_benefit} — using Edge Cache deployed in front of your existing server. No code changes, no plugins, no downtime. Just a DNS switch and you go live within 24 hours.
 
@@ -139,7 +150,10 @@ Would you be open to a 15-minute call to walk through the results?
 Best Regards,
 [Your name]
 fast.site
-https://fast.site"""
+https://fast.site
+
+--
+You received this one-off email because we ran a public performance audit of {domain}. fast.site — Edge Cache Services. If you'd rather not hear from us, just reply "unsubscribe" and we'll remove you immediately and permanently."""
 
     return email
 

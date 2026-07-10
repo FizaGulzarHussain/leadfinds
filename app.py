@@ -6,6 +6,18 @@ import time
 import json
 import socket
 import random
+import concurrent.futures
+
+# Persistent, shared SQLite store (leads survive restarts + are shared across
+# reps on the same server). Guarded so any store failure degrades to the old
+# session-only behaviour instead of taking the app down.
+try:
+    import store as _store
+    _store.init_db()
+    STORE_AVAILABLE = True
+except Exception:
+    STORE_AVAILABLE = False
+    _store = None
 import requests
 from datetime import datetime, timedelta
 import pandas as pd
@@ -294,42 +306,45 @@ div[class*="st-key-area_query_searchbox"] iframe {
 [data-testid="stDownloadButton"] > button p,
 [data-testid="stDownloadButton"] > button span { color: inherit !important; }
 
-/* PRIMARY — vivid blue gradient, always white text */
-.stButton > button[kind="primary"],
-button[data-testid="baseButton-primary"] {
+/* PRIMARY — vivid blue gradient, always white text.
+   kind^="primary" also matches form-submit primary buttons
+   (kind="primaryFormSubmit"), e.g. the sign-in "Continue" button, so it
+   inherits the same gradient instead of Streamlit's default red. */
+button[kind^="primary"],
+button[data-testid*="baseButton-primary"] {
     background: linear-gradient(135deg, #3B82F6 0%, #2563EB 50%, #1D4ED8 100%) !important;
     color: #FFFFFF !important; border: none !important;
     box-shadow: 0 4px 14px rgba(37,99,235,0.35), 0 1px 4px rgba(37,99,235,0.2) !important;
     text-shadow: 0 1px 2px rgba(0,0,0,0.12) !important;
 }
-.stButton > button[kind="primary"] p,
-.stButton > button[kind="primary"] span,
-button[data-testid="baseButton-primary"] p,
-button[data-testid="baseButton-primary"] span { color: #FFFFFF !important; }
-.stButton > button[kind="primary"]:hover,
-button[data-testid="baseButton-primary"]:hover {
+button[kind^="primary"] p,
+button[kind^="primary"] span,
+button[data-testid*="baseButton-primary"] p,
+button[data-testid*="baseButton-primary"] span { color: #FFFFFF !important; }
+button[kind^="primary"]:hover,
+button[data-testid*="baseButton-primary"]:hover {
     background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 50%, #1E40AF 100%) !important;
     color: #FFFFFF !important;
     box-shadow: 0 8px 24px rgba(37,99,235,0.45), 0 2px 6px rgba(37,99,235,0.25) !important;
     transform: translateY(-2px) !important;
 }
-.stButton > button[kind="primary"]:hover p,
-.stButton > button[kind="primary"]:hover span,
-button[data-testid="baseButton-primary"]:hover p,
-button[data-testid="baseButton-primary"]:hover span { color: #FFFFFF !important; }
-.stButton > button[kind="primary"]:active,
-button[data-testid="baseButton-primary"]:active {
+button[kind^="primary"]:hover p,
+button[kind^="primary"]:hover span,
+button[data-testid*="baseButton-primary"]:hover p,
+button[data-testid*="baseButton-primary"]:hover span { color: #FFFFFF !important; }
+button[kind^="primary"]:active,
+button[data-testid*="baseButton-primary"]:active {
     transform: translateY(0) !important;
     box-shadow: 0 2px 8px rgba(37,99,235,0.3) !important;
     color: #FFFFFF !important;
 }
-.stButton > button[kind="primary"]:disabled,
-button[data-testid="baseButton-primary"]:disabled {
+button[kind^="primary"]:disabled,
+button[data-testid*="baseButton-primary"]:disabled {
     background: #BFDBFE !important; color: #93C5FD !important;
     box-shadow: none !important; cursor: not-allowed !important;
 }
-.stButton > button[kind="primary"]:disabled p,
-.stButton > button[kind="primary"]:disabled span { color: #93C5FD !important; }
+button[kind^="primary"]:disabled p,
+button[kind^="primary"]:disabled span { color: #93C5FD !important; }
 
 /* SECONDARY — clean white card with blue border */
 .stButton > button:not([kind="primary"]) {
@@ -437,6 +452,11 @@ div[role="tooltip"] *, [data-testid="stTooltipContent"] *,
 
 /* ── Radio Pills ──────────────────────────────────────── */
 .stRadio > div { gap: 0.5rem !important; flex-direction: row !important; flex-wrap: wrap !important; }
+/* Hide the browser's native radio circle (the red/empty dot). The selected
+   state is conveyed by the whole pill's background instead. The circle is the
+   div sitting immediately before the text container, so match it by that
+   relationship (depth-independent) rather than a fixed child position. */
+.stRadio label div:has(+ [data-testid="stMarkdownContainer"]) { display: none !important; }
 .stRadio > div > label {
     background: #FFFFFF !important; border: 1.5px solid #CBD5E1 !important;
     border-radius: 9px !important; padding: 0.5rem 1.2rem !important;
@@ -444,12 +464,16 @@ div[role="tooltip"] *, [data-testid="stTooltipContent"] *,
     transition: all 0.17s !important;
     font-weight: 600 !important; font-size: 0.88rem !important; color: #475569 !important;
 }
-.stRadio > div > label:hover { border-color: #2563EB !important; color: #2563EB !important; background: #EFF6FF !important; }
+.stRadio > div > label:hover { border-color: #93C5FD !important; color: #2563EB !important; background: #EFF6FF !important; }
 .stRadio > div > label:has(input:checked) {
-    border-color: #2563EB !important; background: #EFF6FF !important;
-    color: #1D4ED8 !important; font-weight: 700 !important;
-    box-shadow: 0 2px 8px rgba(37,99,235,0.15) !important;
+    border-color: transparent !important;
+    background: linear-gradient(135deg,#3B82F6 0%,#2563EB 100%) !important;
+    color: #FFFFFF !important; font-weight: 700 !important;
+    box-shadow: 0 3px 10px rgba(37,99,235,0.30) !important;
 }
+.stRadio > div > label:has(input:checked) p,
+.stRadio > div > label:has(input:checked) span,
+.stRadio > div > label:has(input:checked) div { color: #FFFFFF !important; }
 
 /* ── Alerts ───────────────────────────────────────────── */
 [data-testid="stAlert"] {
@@ -803,7 +827,7 @@ if "lang" not in st.session_state:
     <div style="font-size:0.95rem;color:#94A3B8;margin-bottom:0.2rem;">
       Find slow websites · Extract contacts · Generate cold emails
     </div>
-    <div style="display:inline-block;background:rgba(37,99,235,0.18);color:#93C5FD;border:1px solid rgba(59,130,246,0.35);
+    <div style="display:inline-block;background:rgba(37,99,235,0.12);color:#1D4ED8;border:1px solid rgba(59,130,246,0.45);
       border-radius:99px;padding:4px 16px;font-size:0.78rem;font-weight:700;letter-spacing:0.05em;
       text-transform:uppercase;margin-top:0.75rem;">Choose your language · Sprache wählen</div>
   </div>
@@ -1460,6 +1484,55 @@ st.session_state.setdefault("view", "leads")          # leads | history | export
 st.session_state.setdefault("search_mode", "search")  # search | direct
 st.session_state.setdefault("detail_url", None)        # currently-open detail row
 
+# ── Hydrate the session caches from the SHARED store once per sign-in, so a rep
+#    immediately sees every persisted lead — including teammates' — the moment
+#    they land, and re-checks/contacts build on that rather than starting empty.
+if STORE_AVAILABLE and not st.session_state.get("_store_hydrated"):
+    try:
+        for _lead in _store.all_leads():
+            _u = _lead["url"]
+            if _lead.get("audit"):   st.session_state["audits"][_u]   = _lead["audit"]
+            if _lead.get("cdn"):     st.session_state["cdn_map"][_u]  = _lead["cdn"]
+            if _lead.get("tech"):    st.session_state["tech"][_u]     = _lead["tech"]
+            if _lead.get("contact"): st.session_state["contacts"][_u] = _lead["contact"]
+            if _lead.get("contacted_at"):
+                st.session_state["contacted"][_u] = {
+                    "at": _lead["contacted_at"], "by": _lead.get("contacted_by", "")}
+            st.session_state["history"][_u] = {
+                "business_name": _lead.get("business_name") or _lead.get("domain") or _u,
+                "url":           _u,
+                "overall_score": _lead.get("overall") or 0,
+                "speed_score":   _lead.get("speed") or 0,
+                "audit":         _lead.get("audit") or {},
+                "last_checked":  _lead.get("last_updated", ""),
+                "first_checked": _lead.get("first_seen", ""),
+                "check_count":   _lead.get("check_count", 1),
+            }
+    except Exception:
+        pass
+    st.session_state["_store_hydrated"] = True
+
+
+def _persist_audit(url: str, result: dict, cdn: dict) -> None:
+    """Write one audited lead through to the shared store (best-effort — a store
+    error must never break the audit flow)."""
+    if not STORE_AVAILABLE or result.get("error"):
+        return
+    try:
+        bd = result.get("breakdown", {}) or {}
+        _store.upsert_lead(
+            url,
+            business_name=result.get("business_name"),
+            audit=result, cdn=cdn,
+            opportunity=opportunity_score(result, cdn_info=cdn or {}),
+            speed=(bd.get("speed") or {}).get("score"),
+            overall=result.get("overall_score"),
+            owner=st.session_state.get("rep_name") or None,
+            bump_check=True,
+        )
+    except Exception:
+        pass
+
 # ── Score glossary: one-line plain-English definition per metric ──────────────
 def _score_defs() -> dict:
     return {
@@ -1520,24 +1593,76 @@ def _audit_scores(url: str) -> dict:
         "overall": a.get("overall_score", 0),
     }
 
+def _parallel_map(fn, items: list, label_ph, prog, label_fn, max_workers: int = 6) -> dict:
+    """Run fn(item) across items concurrently (these tasks are I/O-bound —
+    live HTTP fetches + Lighthouse/Chrome subprocesses — so a thread pool turns
+    a serial 15×35s wait into a handful of parallel batches).
+
+    Progress and a rolling ETA are updated in the MAIN thread as each future
+    resolves (Streamlit widgets aren't safe to touch from worker threads; the
+    work functions themselves make no st.* calls). Returns {item: result-or-Exception}.
+    """
+    items = [x for x in items if x]
+    total = len(items) or 1
+    out: dict = {}
+    done = 0
+    start = time.time()
+    workers = max(1, min(max_workers, total))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(fn, x): x for x in items}
+        for fut in concurrent.futures.as_completed(futures):
+            item = futures[fut]
+            try:
+                out[item] = fut.result()
+            except Exception as exc:            # keep the batch going; surface per-item
+                out[item] = exc
+            done += 1
+            elapsed = time.time() - start
+            remaining = int((elapsed / done) * (total - done))
+            if label_ph is not None:
+                label_ph.caption(label_fn(done, total, remaining))
+            if prog is not None:
+                prog.progress(done / total)
+    return out
+
+
+def _audit_one_bundle(url: str):
+    """Pure network work for one site (no st.* calls) — safe to run in a worker
+    thread. Returns (audit_result, cdn_info)."""
+    result = audit_website(url)
+    try:
+        cdn = detect_cdn(url)
+    except Exception:
+        cdn = {"has_cdn": False}
+    return result, cdn
+
+
 def _run_audits(urls: list[str], label_ph, prog) -> None:
-    """Audit each URL in place: store audit (+ business_name), CDN, and sync
-    History — the single write path so every view sees the same data."""
-    total = len(urls) or 1
-    for i, url in enumerate(urls):
-        if not url:
-            continue
-        label_ph.caption(f"⚡ {_t('Checking', 'Prüfe')} {_domain(url)} …")
-        result = audit_website(url)
+    """Audit each URL concurrently, then store audit (+ business_name), CDN, and
+    sync History — the single write path so every view sees the same data.
+
+    Audits run in parallel (~5× faster on a batch); the session-state writes and
+    History sync happen here in the main thread once each result is back.
+    """
+    urls = [u for u in urls if u]
+    bundles = _parallel_map(
+        _audit_one_bundle, urls, label_ph, prog,
+        lambda d, t, r: f"⚡ {_t('Checked', 'Geprüft')} {d}/{t} · ~{r}s {_t('left', 'übrig')}",
+        max_workers=5,   # each audit spawns Chrome + Lighthouse; keep it modest
+    )
+    for url, res in bundles.items():
+        if isinstance(res, Exception):
+            result = {"url": url, "overall_score": 0, "error": str(res),
+                      "breakdown": {}, "fastsite_projection": {}}
+            cdn = {"has_cdn": False}
+        else:
+            result, cdn = res
         result["business_name"] = _biz_name(url)
         st.session_state["audits"][url]  = result
-        try:
-            st.session_state["cdn_map"][url] = detect_cdn(url)
-        except Exception:
-            st.session_state["cdn_map"].setdefault(url, {"has_cdn": False})
+        st.session_state["cdn_map"][url] = cdn
         if not result.get("error"):
             _record_history(url, result, name=result["business_name"])
-        prog.progress((i + 1) / total)
+            _persist_audit(url, result, cdn)   # → shared store (survives restart)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1668,6 +1793,149 @@ DEFS = _score_defs()
 # ═════════════════════════════════════════════════════════════════════════════
 # DETAIL DRAWER  (rendered inline below the table for the selected lead)
 # ═════════════════════════════════════════════════════════════════════════════
+def _pitch_line(sc: dict) -> str:
+    """One persuasive, sales-ready sentence about this lead — tied to the score
+    so we never claim a fast site is slow."""
+    if sc.get("opp") is None:
+        return _t("Run a speed check to see the pitch angle.",
+                  "Speed-Check ausführen, um den Pitch-Winkel zu sehen.")
+    if sc["opp"] >= 42:
+        return _t(
+            "This site is slow, which likely hurts their Google ranking — a strong opportunity to pitch our edge-caching speed fix.",
+            "Diese Seite ist langsam, was ihr Google-Ranking beeinträchtigt — eine starke Gelegenheit für unseren Edge-Caching-Speed-Fix.",
+        )
+    return _t(
+        "This site is already fairly fast, so there's less to pitch — lower priority for outreach.",
+        "Diese Seite ist bereits recht schnell — weniger Pitch-Potenzial, niedrigere Priorität.",
+    )
+
+
+def _slow_reasons(url: str, a: dict, sc: dict) -> list[str]:
+    """Turn the raw audit/CDN/tech data into short plain-English talking points a
+    rep can say out loud — not tech-stack jargon."""
+    reasons: list[str] = []
+    cdn = st.session_state["cdn_map"].get(url, {})
+    proj = (a or {}).get("fastsite_projection", {}) or {}
+    cur = proj.get("current", {}) or {}
+    ttfb = cur.get("ttfb_ms")
+    lcp = cur.get("lcp_ms")
+    tech = st.session_state["tech"].get(url, {}) or {}
+
+    if not cdn.get("has_cdn"):
+        reasons.append(_t(
+            "No CDN or caching layer — every visitor (and every Google bot) loads directly from their slow origin server, adding hundreds of milliseconds of delay.",
+            "Kein CDN oder Caching — jeder Besucher (und jeder Google-Bot) lädt direkt vom langsamen Ursprungsserver, was Hunderte Millisekunden Verzögerung bedeutet.",
+        ))
+    if sc.get("state") == "ok" and sc.get("speed", 100) < 55:
+        reasons.append(_t(
+            f"Slow server response{f' ({ttfb} ms — ideal is under 200 ms)' if ttfb else ''} — the page feels sluggish before anything even appears.",
+            f"Langsame Serverantwort{f' ({ttfb} ms — ideal unter 200 ms)' if ttfb else ''} — die Seite wirkt träge, bevor überhaupt etwas erscheint.",
+        ))
+    if sc.get("state") == "ok" and sc.get("perf", 100) < 55:
+        reasons.append(_t(
+            f"Fails Google's Core Web Vitals{f' (largest content takes {lcp/1000:.1f}s — Google wants under 2.5s)' if lcp else ''}, and Google pushes slow pages down in search results.",
+            f"Erfüllt Googles Core Web Vitals nicht{f' (größter Inhalt braucht {lcp/1000:.1f}s — Google will unter 2,5s)' if lcp else ''}, und Google stuft langsame Seiten im Ranking herab.",
+        ))
+    cms = tech.get("cms")
+    plugins = tech.get("plugins") or []
+    if cms and cms != "Unknown" and len(plugins) >= 3:
+        reasons.append(_t(
+            f"Built on {cms} with {len(plugins)} plugins — that kind of plugin bloat is a classic speed killer that edge caching sidesteps entirely.",
+            f"Basiert auf {cms} mit {len(plugins)} Plugins — solcher Plugin-Ballast ist ein klassischer Tempokiller, den Edge-Caching umgeht.",
+        ))
+    if not reasons:
+        reasons.append(_t(
+            "This site is already on a CDN and responds quickly — there's less obvious speed upside to pitch here.",
+            "Diese Seite nutzt bereits ein CDN und antwortet schnell — hier gibt es weniger offensichtliches Tempo-Potenzial.",
+        ))
+    return reasons
+
+
+def _preview_candidate(url: str, sc: dict) -> tuple[bool, str]:
+    """Judge whether a LIVE edge preview is likely to show a convincing win, so
+    a rep never pulls up an inconclusive demo in front of a prospect.
+
+    A live cache win needs (a) no existing CDN in front of the origin and
+    (b) a slow-enough origin that caching visibly beats it. When either is
+    missing, the live measurement tends to come back 'inconclusive', so we
+    steer the rep to the projected before/after instead.
+    """
+    cdn = st.session_state["cdn_map"].get(url, {})
+    if cdn.get("has_cdn"):
+        return False, _t(
+            f"{cdn.get('cdn_name') or 'A CDN'} is already in front of this site, so a live edge preview will likely tie the origin. Use the projected comparison for the pitch.",
+            f"{cdn.get('cdn_name') or 'Ein CDN'} liegt bereits vor dieser Seite — eine Live-Vorschau wird dem Origin wohl gleichkommen. Nutze den projizierten Vergleich.",
+        )
+    if sc.get("state") == "ok" and (sc.get("speed") or 0) >= 60:
+        return False, _t(
+            "This origin is already fairly fast, so a live cache win may be marginal. The projected comparison is the safer pitch.",
+            "Dieser Origin ist bereits recht schnell — ein Live-Cache-Gewinn kann gering ausfallen. Der projizierte Vergleich ist sicherer.",
+        )
+    return True, _t(
+        "No CDN + slow origin — a live edge preview should show a clear win.",
+        "Kein CDN + langsamer Origin — eine Live-Vorschau sollte einen klaren Gewinn zeigen.",
+    )
+
+
+def _synthetic_before_after(a: dict) -> str | None:
+    """A guaranteed, always-available before/after graphic built from THIS site's
+    audit projection (audit.py:compute_fastsite_projection). Used as the reliable
+    fallback when a live preview is inconclusive — and as a pitch visual in its
+    own right. Clearly labelled 'projected' so it's never passed off as measured.
+    """
+    proj = (a or {}).get("fastsite_projection", {}) or {}
+    cur  = proj.get("current", {}) or {}
+    pj   = proj.get("projected", {}) or {}
+    imp  = proj.get("improvements", {}) or {}
+    if not cur or not pj:
+        return None
+    cur_perf = int(cur.get("perf_score", 0) or 0)
+    pj_min   = int(pj.get("perf_score_min", cur_perf) or cur_perf)
+    pj_max   = int(pj.get("perf_score_max", cur_perf) or cur_perf)
+    cur_ttfb = int(cur.get("ttfb_ms", 0) or 0)
+    pj_ttfb  = int(pj.get("ttfb_ms", cur_ttfb) or cur_ttfb)
+    ttfb_pct = int(imp.get("ttfb_speedup_pct", 0) or 0)
+
+    def _bar(pct, color):
+        pct = max(2, min(100, pct))
+        return (f'<div style="flex:1;background:#EEF2F7;border-radius:6px;height:16px;overflow:hidden;">'
+                f'<div style="width:{pct}%;height:100%;background:{color};border-radius:6px;"></div></div>')
+
+    # TTFB bar widths are relative to the (larger) current value.
+    ttfb_cur_w = 100
+    ttfb_pj_w  = max(2, round(pj_ttfb / max(cur_ttfb, 1) * 100))
+    return f"""
+<div style="border:1px solid #E2E8F4;border-radius:12px;padding:14px 16px;background:#FFFFFF;">
+  <div style="font-size:0.9rem;font-weight:800;color:#0F172A;margin-bottom:2px;">
+    📊 {_t('Projected with fast.site Edge Cache','Projiziert mit fast.site Edge Cache')}</div>
+  <div style="font-size:0.72rem;color:#94A3B8;margin-bottom:12px;">
+    {_t('Modelled from this site’s audit — not a live measurement.','Aus dem Audit dieser Seite modelliert — keine Live-Messung.')}</div>
+
+  <div style="font-size:0.78rem;font-weight:700;color:#475569;margin-bottom:4px;">PageSpeed</div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+    <span style="width:70px;font-size:0.74rem;color:#64748B;">{_t('Origin now','Origin jetzt')}</span>
+    {_bar(cur_perf, '#D97706')}<span style="width:78px;text-align:right;font-size:0.78rem;font-weight:700;color:#D97706;">{cur_perf}/100</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+    <span style="width:70px;font-size:0.74rem;color:#64748B;">fast.site</span>
+    {_bar(pj_max, '#059669')}<span style="width:78px;text-align:right;font-size:0.78rem;font-weight:800;color:#059669;">{pj_min}–{pj_max}/100</span>
+  </div>
+
+  <div style="font-size:0.78rem;font-weight:700;color:#475569;margin-bottom:4px;">{_t('Server response (TTFB)','Serverantwort (TTFB)')}</div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+    <span style="width:70px;font-size:0.74rem;color:#64748B;">{_t('Origin now','Origin jetzt')}</span>
+    {_bar(ttfb_cur_w, '#D97706')}<span style="width:78px;text-align:right;font-size:0.78rem;font-weight:700;color:#D97706;">{cur_ttfb} ms</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span style="width:70px;font-size:0.74rem;color:#64748B;">fast.site</span>
+    {_bar(ttfb_pj_w, '#059669')}<span style="width:78px;text-align:right;font-size:0.78rem;font-weight:800;color:#059669;">{pj_ttfb} ms</span>
+  </div>
+  <div style="margin-top:10px;font-size:0.8rem;color:#059669;font-weight:700;">
+    ⚡ {_t('Up to','Bis zu')} {ttfb_pct}% {_t('faster server response','schnellere Serverantwort')}</div>
+</div>
+"""
+
+
 def _render_detail(url: str) -> None:
     a = st.session_state["audits"].get(url)
     name = _biz_name(url)
@@ -1698,8 +1966,8 @@ def _render_detail(url: str) -> None:
   <div class="num" style="color:{tl_hex};">{sc['opp']}</div>
   <div class="meta">
     <span class="badge" style="background:{tl_hex};">{emoji} {tl_label} {_t('lead','Lead')}</span>
-    <span style="font-size:0.82rem;color:#475569;">{tl_mean}</span>
-    <span style="font-size:0.72rem;color:#94A3B8;">{_t('Opportunity','Chance')} · {DEFS['opportunity']}</span>
+    <span style="font-size:0.86rem;color:#334155;font-weight:600;">{_pitch_line(sc)}</span>
+    <span style="font-size:0.72rem;color:#94A3B8;">{_t('Opportunity score','Chancen-Score')}: {sc['opp']}/100</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1710,21 +1978,76 @@ def _render_detail(url: str) -> None:
     m2.metric(_t("Performance", "Performance"), f"{sc['perf']}/100", help=DEFS["performance"])
     m3.metric(_t("Overall health", "Gesamt"), f"{sc['overall']}/100", help=DEFS["overall"])
 
-    # ── Technical detail — hidden by default ─────────────────────────────────
-    with st.expander(_t("🔧 Technical detail (tech stack, CDN, sub-scores)",
-                        "🔧 Technische Details (Tech-Stack, CDN, Teilwerte)")):
-        t = st.session_state["tech"].get(url)
-        if t:
-            st.markdown(_render_tech_badges(t), unsafe_allow_html=True)
-        cdn = st.session_state["cdn_map"].get(url, {})
-        st.caption(f"CDN: {'✅ ' + (cdn.get('cdn_name') or 'yes') if cdn.get('has_cdn') else '❌ ' + _t('none detected','keins erkannt')}")
-        bd = (a or {}).get("breakdown", {}) or {}
-        if bd:
-            sub = pd.DataFrame(
-                [{"Category": k.replace('_', ' ').title(), "Score": (v or {}).get("score", 0)}
-                 for k, v in bd.items()]
-            )
-            st.dataframe(sub, hide_index=True, use_container_width=True)
+    # ── Team CRM controls: ownership + pipeline status (persisted & shared) ────
+    #    Read fresh from the store each render so a teammate's claim/contact
+    #    shows up live, preventing two reps from working the same lead.
+    if STORE_AVAILABLE:
+        try:
+            _lead_rec = _store.get_lead(url) or {}
+        except Exception:
+            _lead_rec = {}
+        _uk       = re.sub(r"\W+", "_", url).strip("_")
+        _rep      = st.session_state.get("rep_name", "")
+        _owner    = _lead_rec.get("owner")
+        _status   = _lead_rec.get("status") or "new"
+        _c_by     = _lead_rec.get("contacted_by")
+        _c_at     = _lead_rec.get("contacted_at")
+        _STATUS_LABELS = {
+            "new": _t("🆕 New", "🆕 Neu"), "contacted": _t("✉️ Contacted", "✉️ Kontaktiert"),
+            "replied": _t("↩️ Replied", "↩️ Geantwortet"), "booked": _t("📅 Demo booked", "📅 Demo gebucht"),
+            "won": _t("✅ Won", "✅ Gewonnen"), "lost": _t("❌ Lost", "❌ Verloren"),
+        }
+        oc1, oc2, oc3 = st.columns([1.3, 1.5, 1.2])
+        with oc1:
+            st.caption(_t("Owner", "Zuständig"))
+            if _owner and _owner != _rep:
+                st.markdown(f"**👤 {_owner}**")
+                if st.button(_t("Reassign to me", "Mir zuweisen"), key=f"claim_{_uk}",
+                             use_container_width=True):
+                    _store.claim_lead(url, _rep); st.rerun()
+            elif _owner == _rep:
+                st.markdown(f"**👤 {_owner}** · {_t('you','Sie')}")
+            else:
+                if st.button(_t("🙋 Claim this lead", "🙋 Lead übernehmen"), key=f"claim_{_uk}",
+                             use_container_width=True):
+                    _store.claim_lead(url, _rep); st.rerun()
+        with oc2:
+            st.caption(_t("Pipeline status", "Pipeline-Status"))
+            _idx = _store.STATUSES.index(_status) if _status in _store.STATUSES else 0
+            _new_status = st.selectbox(
+                "status", _store.STATUSES, index=_idx,
+                format_func=lambda s: _STATUS_LABELS.get(s, s),
+                key=f"status_{_uk}", label_visibility="collapsed")
+            if _new_status != _status:
+                _store.set_status(url, _new_status); st.rerun()
+        with oc3:
+            st.caption(_t("Contacted", "Kontaktiert"))
+            if _c_at:
+                st.markdown(f"✅ **{_c_by or '—'}**")
+                st.caption(_c_at)
+            else:
+                st.markdown("—")
+
+    # ── Talking points — plain-English "why it's slow", hidden by default ─────
+    with st.expander(_t("💬 Why their site is slow (talking points)",
+                        "💬 Warum ihre Seite langsam ist (Gesprächspunkte)")):
+        for _reason in _slow_reasons(url, a, sc):
+            st.markdown(f"- {_reason}")
+        # Raw technical evidence kept as a nested, secondary reference.
+        with st.expander(_t("🔧 Technical evidence (tech stack, CDN, sub-scores)",
+                            "🔧 Technische Belege (Tech-Stack, CDN, Teilwerte)")):
+            t = st.session_state["tech"].get(url)
+            if t:
+                st.markdown(_render_tech_badges(t), unsafe_allow_html=True)
+            cdn = st.session_state["cdn_map"].get(url, {})
+            st.caption(f"CDN: {'✅ ' + (cdn.get('cdn_name') or 'yes') if cdn.get('has_cdn') else '❌ ' + _t('none detected','keins erkannt')}")
+            bd = (a or {}).get("breakdown", {}) or {}
+            if bd:
+                sub = pd.DataFrame(
+                    [{"Category": k.replace('_', ' ').title(), "Score": (v or {}).get("score", 0)}
+                     for k, v in bd.items()]
+                )
+                st.dataframe(sub, hide_index=True, use_container_width=True)
 
     # ── Contact + outreach ───────────────────────────────────────────────────
     c = st.session_state["contacts"].get(url)
@@ -1733,7 +2056,13 @@ def _render_detail(url: str) -> None:
         if st.button(_t("📇 Extract contact info", "📇 Kontakt extrahieren"),
                      key="detail_contact", use_container_width=True):
             with st.spinner(_t("Scanning site for email & phone…", "Suche nach E-Mail & Telefon…")):
-                st.session_state["contacts"][url] = extract_contact_info(url)
+                _extracted = extract_contact_info(url)
+                st.session_state["contacts"][url] = _extracted
+                if STORE_AVAILABLE:
+                    try:
+                        _store.upsert_lead(url, contact=_extracted)
+                    except Exception:
+                        pass
             st.rerun()
     if c:
         email = c.get("primary_email") or (c.get("emails") or [None])[0]
@@ -1766,19 +2095,33 @@ def _render_detail(url: str) -> None:
         rep = st.session_state.get("rep_name", "").strip()
         body = body.replace("[Your name]", rep or "[Your name]")
         edited = st.text_area(_t("Body", "Text"), value=body, height=240, key="detail_email_body")
-        recipient = st.text_input(_t("Send to", "Senden an"),
-                                  value=(c or {}).get("primary_email", "") or "",
-                                  key="detail_email_to")
+        # Auto-fill the recipient from freshly-extracted contact info. Two
+        # gotchas handled here: (1) Streamlit ignores `value=` once a keyed
+        # widget already exists, so we seed session_state directly instead;
+        # (2) the key is per-URL so switching leads doesn't carry an address
+        # over. We only seed when the field is still empty, so a rep's
+        # hand-typed address is never clobbered.
+        _recip_key = "detail_email_to_" + url.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
+        _auto_email = (c or {}).get("primary_email") or ((c or {}).get("emails") or [None])[0] or ""
+        if _auto_email and not st.session_state.get(_recip_key):
+            st.session_state[_recip_key] = _auto_email
+        recipient = st.text_input(_t("Send to", "Senden an"), key=_recip_key)
         sccol1, sccol2 = st.columns([1, 1])
         with sccol1:
             if st.button(_t("📤 Send email", "📤 E-Mail senden"), key="detail_send",
                          type="primary", use_container_width=True, disabled=not recipient):
                 ok, msg = send_email_smtp(recipient, subject_line, edited)
                 if ok:
+                    _rep = st.session_state.get("rep_name", "")
                     st.session_state["contacted"][url] = {
                         "at": time.strftime("%Y-%m-%d %H:%M"),
-                        "by": st.session_state.get("rep_name", ""),
+                        "by": _rep,
                     }
+                    if STORE_AVAILABLE:
+                        try:
+                            _store.set_contacted(url, by=_rep)   # team-visible, persists
+                        except Exception:
+                            pass
                     st.success(_t("Sent!", "Gesendet!"))
                 else:
                     st.error(msg)
@@ -1802,9 +2145,11 @@ def _render_detail(url: str) -> None:
         _safe_url_key = url.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
         _preview_session_key = f"preview_result_{_safe_url_key}"
         _cached_preview = st.session_state.get(_preview_session_key)
+        _good_cand, _cand_reason = _preview_candidate(url, sc)
         if PREVIEW_API_AVAILABLE and st.button(
-            f"🌐 {_t('Generate live preview','Live-Vorschau erstellen')}",
-            key="detail_preview", use_container_width=True):
+            f"🚀 {_t('Show them the speed boost','Tempo-Boost zeigen')}",
+            key="detail_preview", use_container_width=True,
+            type="primary" if _good_cand else "secondary"):
             _pk = get_preview_api_key() or _get_secret("PREVIEW_SERVICE_KEY")
             if not _pk:
                 st.warning(_t("No PREVIEW_SERVICE_KEY configured.", "Kein PREVIEW_SERVICE_KEY konfiguriert."))
@@ -1817,9 +2162,14 @@ def _render_detail(url: str) -> None:
                 st.session_state[_preview_session_key] = _res
                 _record_preview(url, _res, name=name)
                 st.rerun()
+        # Steer the rep BEFORE they demo: flag when a live win is unlikely.
+        if _cached_preview is None:
+            st.caption((("✅ " if _good_cand else "⚠️ ") + _cand_reason))
+
     if PREVIEW_API_AVAILABLE and _cached_preview is not None:
-        render_preview_results(_cached_preview)
-        if _cached_preview.ok and not _cached_preview.inconclusive:
+        _live_win = _cached_preview.ok and not _cached_preview.inconclusive
+        if _live_win:
+            render_preview_results(_cached_preview)
             st.success(
                 f"✅ **{_t('Real measurement complete','Echte Messung abgeschlossen')}** — "
                 f"TTFB {_t('improved by','verbessert um')} **{_cached_preview.ttfb_improvement_pct}%**, "
@@ -1827,6 +2177,16 @@ def _render_detail(url: str) -> None:
                 f"(+{_cached_preview.score_improvement} {_t('pts','Punkte')}). "
                 f"[{_t('View live preview','Live-Vorschau ansehen')}]({_cached_preview.preview_url})"
             )
+        else:
+            # Live measurement was inconclusive — don't leave the rep with a dud
+            # demo. Fall back to the projected before/after, clearly labelled.
+            st.warning(_t(
+                "Live measurement was inconclusive (the origin didn't serve a cacheable response). Showing the projected comparison instead — safe to use in the pitch.",
+                "Live-Messung nicht eindeutig (der Origin lieferte keine cachebare Antwort). Stattdessen der projizierte Vergleich — sicher für den Pitch.",
+            ))
+            _graphic = _synthetic_before_after(a)
+            if _graphic:
+                st.markdown(_graphic, unsafe_allow_html=True)
         if getattr(_cached_preview, "preview_url", ""):
             if st.button(
                 f"🗑 {_t('Unpreview this site','Vorschau entfernen')}",
@@ -1835,6 +2195,16 @@ def _render_detail(url: str) -> None:
                 _remove_preview(url)
                 st.session_state.pop(_preview_session_key, None)
                 st.rerun()
+
+    # Projected before/after is ALWAYS available from the audit — offer it as a
+    # reliable pitch visual regardless of whether a live preview was run.
+    if sc.get("state") == "ok":
+        _graphic_always = _synthetic_before_after(a)
+        if _graphic_always and not (_cached_preview is not None and not (_cached_preview.ok and not _cached_preview.inconclusive)):
+            with st.expander(_t("📊 Projected before/after (pitch visual)",
+                                "📊 Projiziertes Vorher/Nachher (Pitch-Grafik)"),
+                             expanded=False):
+                st.markdown(_graphic_always, unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1846,7 +2216,7 @@ if _view == "leads":
         _t("Mode", "Modus"),
         options=["search", "direct"],
         format_func=lambda m: (f"🔍 {_t('Search businesses','Unternehmen suchen')}" if m == "search"
-                               else f"🌐 {_t('Audit a URL','URL prüfen')}"),
+                               else f"🌐 {_t('Check a website','Website prüfen')}"),
         horizontal=True, label_visibility="collapsed", key="search_mode",
     )
 
@@ -1862,7 +2232,8 @@ if _view == "leads":
             search_query = st.text_input(_t("Keywords (optional)", "Stichworte (optional)"),
                                          placeholder=_t("family owned…", "familiengeführt…"), key="q_kw")
         with s4:
-            max_results = st.number_input(_t("Max", "Max"), min_value=1, max_value=50, value=15, key="q_max")
+            max_results = st.number_input(_t("Number of results", "Anzahl Ergebnisse"),
+                                          min_value=1, max_value=50, value=15, key="q_max")
         with s5:
             st.markdown("<div style='height:1.75rem;'></div>", unsafe_allow_html=True)
             do_search = st.button(f"🔍 {_t('Search','Suchen')}", type="primary",
@@ -1877,16 +2248,28 @@ if _view == "leads":
                 st.session_state["results"] = results
                 st.session_state["engines"] = engines
                 st.session_state["detail_url"] = None
-                # tech + cdn detection for the new URLs
+                # tech + cdn detection for the new URLs (concurrent — these are
+                # light HTTP fetches, so a wider pool than the audits is fine)
                 if results:
                     prog = st.progress(0.0)
                     ph = st.empty()
                     urls = [r.get("source_url", "") for r in results if r.get("source_url")]
-                    for i, u in enumerate(urls):
-                        ph.caption(f"🧪 {_t('Detecting tech','Tech erkennen')} — {_domain(u)}")
-                        st.session_state["tech"][u] = detect_tech(u)
-                        st.session_state["cdn_map"][u] = detect_cdn(u)
-                        prog.progress((i + 1) / (len(urls) or 1))
+
+                    def _tech_bundle(u):
+                        try:
+                            return detect_tech(u), detect_cdn(u)
+                        except Exception:
+                            return {"cms": "Unknown"}, {"has_cdn": False}
+
+                    _res = _parallel_map(
+                        _tech_bundle, urls, ph, prog,
+                        lambda d, t, r: f"🧪 {_t('Detecting tech','Tech erkennen')} {d}/{t} · ~{r}s {_t('left','übrig')}",
+                        max_workers=8,
+                    )
+                    for u, bundle in _res.items():
+                        if isinstance(bundle, Exception):
+                            continue
+                        st.session_state["tech"][u], st.session_state["cdn_map"][u] = bundle
                     prog.empty(); ph.empty()
                 st.rerun()
 
@@ -1897,7 +2280,7 @@ if _view == "leads":
                                        placeholder="https://example.com", key="q_direct")
         with d2:
             st.markdown("<div style='height:1.75rem;'></div>", unsafe_allow_html=True)
-            do_direct = st.button(f"⚡ {_t('Audit','Prüfen')}", type="primary",
+            do_direct = st.button(f"⚡ {_t('Check','Prüfen')}", type="primary",
                                   use_container_width=True, key="do_direct")
         if do_direct and direct_url.strip():
             u = direct_url.strip()
@@ -1923,38 +2306,29 @@ if _view == "leads":
   <div style="font-weight:700;color:#0F172A;margin-top:0.5rem;">
     {_t('No leads yet','Noch keine Leads')}</div>
   <div style="font-size:0.88rem;max-width:420px;margin:0.4rem auto 0;">
-    {_t('Search a category + location above, or audit a single URL. Results appear here as a sortable table.',
+    {_t('Search a category + location above, or check a single website. Results appear here as a table, best leads first.',
         'Oben Kategorie + Standort suchen oder eine einzelne URL prüfen. Ergebnisse erscheinen hier als sortierbare Tabelle.')}
   </div>
 </div>
 """, unsafe_allow_html=True)
     else:
         urls = [r.get("source_url", "") for r in results if r.get("source_url")]
-        n_checked = sum(1 for u in urls if u in st.session_state["audits"])
-        n_unchecked = len(urls) - n_checked
+        n_unchecked = sum(1 for u in urls if u not in st.session_state["audits"])
 
-        # action bar: run speed checks + filters
-        a1, a2, a3 = st.columns([1.6, 1.4, 2])
-        with a1:
-            if st.button(
-                f"⚡ {_t('Run speed checks','Speed-Checks ausführen')}"
-                + (f" ({n_unchecked})" if n_unchecked else ""),
-                type="primary", use_container_width=True, key="run_checks",
-                disabled=(n_unchecked == 0)):
-                to_check = [u for u in urls if u not in st.session_state["audits"]]
-                prog = st.progress(0.0); ph = st.empty()
-                _run_audits(to_check, ph, prog)
-                prog.empty(); ph.empty()
-                st.rerun()
-        with a2:
-            min_opp = st.slider(_t("Min opportunity", "Min. Chance"), 0, 100, 0, key="filt_opp",
-                                help=DEFS["opportunity"])
-        with a3:
+        # ── Filters ──────────────────────────────────────────────────────────
+        fcol1, fcol2 = st.columns([1.4, 2])
+        with fcol1:
+            good_only = st.toggle(_t("Only show good leads", "Nur gute Leads zeigen"),
+                                  value=False, key="filt_good",
+                                  help=_t("Hide already-fast (cold) sites — show Warm & Hot only.",
+                                          "Bereits schnelle (kalte) Seiten ausblenden — nur Warm & Heiß."))
+        with fcol2:
             needle = st.text_input(_t("Filter by name / URL", "Nach Name / URL filtern"),
                                    key="filt_text", placeholder="…")
+        min_opp = 42 if good_only else 0
 
-        # build rows
-        row_urls, rows = [], []
+        # ── Build rows, sorted best-lead-first (highest opportunity on top) ──
+        _built = []  # (sort_key, url, row_dict)
         for r in results:
             u = r.get("source_url", "")
             if not u:
@@ -1966,19 +2340,57 @@ if _view == "leads":
             if sc["state"] == "ok" and sc["opp"] < min_opp:
                 continue
             emoji, tl_label, _hex, _mean = _traffic_light(sc["opp"] if sc["state"] == "ok" else None)
-            row_urls.append(u)
-            rows.append({
-                "": emoji,
+            # Null scores render as an em dash (—), never the raw Python "None".
+            dash = "—"
+            status_txt = (f"{emoji} {tl_label}" if sc["state"] == "ok"
+                          else (f"⚠️ {_t('error','Fehler')}" if sc["state"] == "error"
+                                else f"⚪ {_t('not checked','ungeprüft')}"))
+            row = {
+                _t("Status", "Status"): status_txt,
                 _t("Business", "Unternehmen"): name,
                 _t("Website", "Website"): _domain(u),
-                _t("Opportunity", "Chance"): sc["opp"] if sc["state"] == "ok" else None,
-                _t("Speed", "Speed"): sc["speed"] if sc["state"] == "ok" else None,
-                _t("Overall", "Gesamt"): sc["overall"] if sc["state"] == "ok" else None,
-                _t("Status", "Status"): (tl_label if sc["state"] == "ok"
-                                         else (_t("error", "Fehler") if sc["state"] == "error"
-                                               else _t("not checked", "ungeprüft"))),
+                _t("Opportunity", "Chance"): str(sc["opp"]) if sc["state"] == "ok" else dash,
+                _t("Speed", "Speed"): str(sc["speed"]) if sc["state"] == "ok" else dash,
+                _t("Overall", "Gesamt"): str(sc["overall"]) if sc["state"] == "ok" else dash,
                 _t("Contacted", "Kontaktiert"): "✅" if u in st.session_state["contacted"] else "",
-            })
+            }
+            sort_key = sc["opp"] if sc["state"] == "ok" else -1  # unchecked/error sink to bottom
+            _built.append((sort_key, u, row))
+        _built.sort(key=lambda t: t[0], reverse=True)
+        row_urls = [t[1] for t in _built]
+        rows = [t[2] for t in _built]
+
+        # ── Read the CURRENT checkbox selection (persisted under the widget key)
+        _sel_idx = []
+        _tbl = st.session_state.get("leads_table")
+        if _tbl is not None:
+            try:
+                _sel_idx = list(_tbl.selection.rows)          # object form
+            except Exception:
+                try:
+                    _sel_idx = list(_tbl["selection"]["rows"])  # dict form
+                except Exception:
+                    _sel_idx = []
+        _selected_urls = [row_urls[i] for i in _sel_idx if 0 <= i < len(row_urls)]
+
+        # ── Action bar: Run speed checks — respects the ticked checkboxes ─────
+        if _selected_urls:
+            run_targets = _selected_urls
+            run_label = f"⚡ {_t('Run speed checks','Speed-Checks ausführen')} ({len(_selected_urls)} {_t('selected','ausgewählt')})"
+        else:
+            run_targets = [u for u in urls if u not in st.session_state["audits"]]
+            run_label = f"⚡ {_t('Run speed checks','Speed-Checks ausführen')}" + (f" ({n_unchecked})" if n_unchecked else "")
+        if st.button(run_label, type="primary", key="run_checks", disabled=not run_targets):
+            prog = st.progress(0.0); ph = st.empty()
+            _run_audits(run_targets, ph, prog)
+            prog.empty(); ph.empty()
+            # Clear selection so stale ticks don't linger after rows re-sort.
+            st.session_state.pop("leads_table", None)
+            st.rerun()
+        st.caption(_t(
+            "Tick rows to check just those; with nothing ticked the button checks every un-checked lead.",
+            "Zeilen anhaken, um nur diese zu prüfen; ohne Auswahl prüft die Schaltfläche alle ungeprüften Leads.",
+        ))
 
         if not rows:
             st.info(_t("No leads match the current filters.", "Keine Leads passen zu den Filtern."))
@@ -1986,24 +2398,29 @@ if _view == "leads":
             df = pd.DataFrame(rows)
             event = st.dataframe(
                 df, hide_index=True, use_container_width=True, key="leads_table",
-                on_select="rerun", selection_mode="single-row",
+                on_select="rerun", selection_mode="multi-row",
                 column_config={
-                    "": st.column_config.TextColumn("", width="small"),
-                    _t("Opportunity", "Chance"): st.column_config.NumberColumn(
-                        _t("Opportunity", "Chance"), help=DEFS["opportunity"], format="%d"),
-                    _t("Speed", "Speed"): st.column_config.NumberColumn(
-                        _t("Speed", "Speed"), help=DEFS["speed"], format="%d"),
-                    _t("Overall", "Gesamt"): st.column_config.NumberColumn(
-                        _t("Overall", "Gesamt"), help=DEFS["overall"], format="%d"),
+                    _t("Status", "Status"): st.column_config.TextColumn(
+                        _t("Status", "Status"), width="small",
+                        help=_t("Hot / Warm / Cold — the actionable takeaway. Rows are sorted best-lead-first.",
+                                "Heiß / Warm / Kalt — die wichtigste Aussage. Zeilen sind nach bestem Lead sortiert.")),
+                    _t("Opportunity", "Chance"): st.column_config.TextColumn(
+                        _t("Opportunity", "Chance"), help=DEFS["opportunity"]),
+                    _t("Speed", "Speed"): st.column_config.TextColumn(
+                        _t("Speed", "Speed"), help=DEFS["speed"]),
+                    _t("Overall", "Gesamt"): st.column_config.TextColumn(
+                        _t("Overall", "Gesamt"), help=DEFS["overall"]),
                 },
             )
             st.caption(_t(
-                "🔴 Hot (65+) · 🟠 Warm (42–64) · 🟢 Cold (<42) — higher opportunity = better lead. Click a row for details.",
-                "🔴 Heiß (65+) · 🟠 Warm (42–64) · 🟢 Kalt (<42) — höhere Chance = besserer Lead. Zeile anklicken für Details.",
+                "🔴 Hot (65+) · 🟠 Warm (42–64) · 🟢 Cold (<42) — higher opportunity = better lead. Tick ONE row to see its details.",
+                "🔴 Heiß (65+) · 🟠 Warm (42–64) · 🟢 Kalt (<42) — höhere Chance = besserer Lead. EINE Zeile anhaken für Details.",
             ))
-            sel = event.selection.rows if event and event.selection else []
-            if sel:
-                st.session_state["detail_url"] = row_urls[sel[0]]
+            # Exactly one row ticked → open its detail; many ticked → batch mode.
+            if len(_sel_idx) == 1:
+                st.session_state["detail_url"] = row_urls[_sel_idx[0]]
+            elif len(_sel_idx) > 1:
+                st.session_state["detail_url"] = None
 
         if st.session_state.get("detail_url") in row_urls:
             _render_detail(st.session_state["detail_url"])
@@ -2013,8 +2430,34 @@ if _view == "leads":
 # VIEW: HISTORY
 # ═════════════════════════════════════════════════════════════════════════════
 elif _view == "history":
-    st.markdown(f"### 🕘 {_t('Checked companies','Geprüfte Unternehmen')}")
-    history = st.session_state.get("history", {})
+    st.markdown(f"### 🕘 {_t('Team leads (shared)','Team-Leads (geteilt)')}")
+    if STORE_AVAILABLE:
+        st.caption(_t("Persisted and shared across the whole team — survives restarts.",
+                      "Dauerhaft gespeichert und teamweit geteilt — übersteht Neustarts."))
+    # Source of truth: the shared store when available (shows teammates' leads
+    # too), otherwise the in-session history as a fallback.
+    if STORE_AVAILABLE:
+        try:
+            _leads_raw = _store.all_leads()
+        except Exception:
+            _leads_raw = []
+        history = {}
+        for _l in _leads_raw:
+            history[_l["url"]] = {
+                "business_name": _l.get("business_name") or _l.get("domain") or _l["url"],
+                "url":           _l["url"],
+                "audit":         _l.get("audit") or {},
+                "overall_score": _l.get("overall") or 0,
+                "opportunity":   _l.get("opportunity"),
+                "last_checked":  _l.get("last_updated", ""),
+                "check_count":   _l.get("check_count", 1),
+                "owner":         _l.get("owner"),
+                "status":        _l.get("status") or "new",
+                "contacted_by":  _l.get("contacted_by"),
+                "cdn":           _l.get("cdn") or {},
+            }
+    else:
+        history = st.session_state.get("history", {})
     if not history:
         st.info(_t("No companies checked yet.", "Noch keine Unternehmen geprüft."))
     else:
@@ -2024,18 +2467,24 @@ elif _view == "history":
                  or needle.lower() in e.get("business_name", "").lower()
                  or needle.lower() in e.get("url", "").lower()]
         items.sort(key=lambda e: e.get("last_checked", ""), reverse=True)
+        _STATUS_EMOJI = {"new": "🆕", "contacted": "✉️", "replied": "↩️",
+                         "booked": "📅", "won": "✅", "lost": "❌"}
         rows = []
         for e in items:
             u = e.get("url", "")
-            opp = opportunity_score(e["audit"], cdn_info=st.session_state["cdn_map"].get(u, {})) \
-                if e.get("audit") and not e["audit"].get("error") else None
+            opp = e.get("opportunity")
+            if opp is None and e.get("audit") and not e["audit"].get("error"):
+                opp = opportunity_score(e["audit"], cdn_info=e.get("cdn") or st.session_state["cdn_map"].get(u, {}))
             emoji, tl, _h, _m = _traffic_light(opp)
+            _st = e.get("status", "new")
             rows.append({
                 "": emoji,
                 _t("Business", "Unternehmen"): e.get("business_name", u),
                 _t("Website", "Website"): _domain(u),
                 _t("Opportunity", "Chance"): opp,
-                _t("Overall", "Gesamt"): e.get("overall_score", 0),
+                _t("Owner", "Zuständig"): e.get("owner") or "—",
+                _t("Status", "Status"): f"{_STATUS_EMOJI.get(_st,'')} {_st}",
+                _t("Contacted by", "Kontaktiert von"): e.get("contacted_by") or "",
                 _t("Checks", "Prüfungen"): e.get("check_count", 1),
                 _t("Last checked", "Zuletzt"): e.get("last_checked", ""),
             })
@@ -2081,6 +2530,12 @@ elif _view == "history":
                                     progress_callback=lambda m: _status_ph.info(m),
                                 )
                             _status_ph.empty()
+                            # Cache the full result object under the same session
+                            # key the detail view uses, so its rich breakdown
+                            # (not just the one-liner) can be replayed from
+                            # History too — not just the summary dict that
+                            # _record_preview keeps for the link/caption.
+                            st.session_state[f"preview_result_{_safe_hist_url}"] = _hist_result
                             _record_preview(u, _hist_result, name=name)
                             st.rerun()
                     else:
@@ -2097,11 +2552,34 @@ elif _view == "history":
                         )
                     except Exception:
                         st.caption(_t("Report unavailable", "Bericht nicht verfügbar"))
+
+                # Same rich breakdown shown right after a preview is generated
+                # (metrics, TTFB comparison, etc.) — not just the download
+                # link. Only available once a preview has actually been run
+                # for this site, since that's what populates the cached
+                # result object below.
+                _safe_hist_url2 = u.replace("https://", "").replace("http://", "").replace("/", "_").strip("_")
+                _hist_cached_result = st.session_state.get(f"preview_result_{_safe_hist_url2}")
+                if PREVIEW_API_AVAILABLE and _hist_cached_result is not None:
+                    with st.expander(f"📊 {_t('View preview results', 'Vorschau-Ergebnisse ansehen')}"):
+                        render_preview_results(_hist_cached_result)
+                        if getattr(_hist_cached_result, "ok", False) and not getattr(_hist_cached_result, "inconclusive", False):
+                            st.success(
+                                f"✅ **{_t('Real measurement complete','Echte Messung abgeschlossen')}** — "
+                                f"TTFB {_t('improved by','verbessert um')} **{_hist_cached_result.ttfb_improvement_pct}%**, "
+                                f"PageSpeed **{_hist_cached_result.perf_score_origin} → {_hist_cached_result.perf_score_preview}** "
+                                f"(+{_hist_cached_result.score_improvement} {_t('pts','Punkte')})."
+                            )
+
                 st.divider()
 
-        if st.button(f"🗑 {_t('Clear history','Verlauf löschen')}", key="hist_clear"):
-            st.session_state["history"] = {}
-            st.rerun()
+        if not STORE_AVAILABLE:
+            if st.button(f"🗑 {_t('Clear history','Verlauf löschen')}", key="hist_clear"):
+                st.session_state["history"] = {}
+                st.rerun()
+        else:
+            st.caption(_t("This is shared team data — manage or clear it from Settings.",
+                          "Dies sind geteilte Teamdaten — in den Einstellungen verwalten/löschen."))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2109,13 +2587,28 @@ elif _view == "history":
 # ═════════════════════════════════════════════════════════════════════════════
 elif _view == "exports":
     st.markdown(f"### 📤 {_t('Exports & reports','Export & Berichte')}")
-    audits = st.session_state.get("audits", {})
-    ok_audits = [a for a in audits.values() if not a.get("error")]
+    # Export the whole shared store (all reps' leads) when available, else the
+    # current session's audits.
+    if STORE_AVAILABLE:
+        try:
+            _exp_leads = _store.all_leads()
+        except Exception:
+            _exp_leads = []
+        ok_audits    = [l["audit"] for l in _exp_leads if l.get("audit") and not l["audit"].get("error")]
+        _exp_contacts = {l["url"]: l["contact"] for l in _exp_leads if l.get("contact")}
+        _exp_cdn      = {l["url"]: l["cdn"] for l in _exp_leads if l.get("cdn")}
+        _exp_contacted = {l["url"]: {"at": l["contacted_at"], "by": l.get("contacted_by", "")}
+                          for l in _exp_leads if l.get("contacted_at")}
+    else:
+        ok_audits     = [a for a in st.session_state.get("audits", {}).values() if not a.get("error")]
+        _exp_contacts = st.session_state.get("contacts", {})
+        _exp_cdn      = st.session_state.get("cdn_map", {})
+        _exp_contacted = st.session_state.get("contacted", {})
     if not ok_audits:
         st.info(_t("No audit data to export yet. Run some speed checks on the Leads view first.",
                    "Noch keine Auditdaten. Zuerst Speed-Checks in der Leads-Ansicht ausführen."))
     else:
-        opps = [opportunity_score(a, cdn_info=st.session_state["cdn_map"].get(a.get("url", ""), {}))
+        opps = [opportunity_score(a, cdn_info=_exp_cdn.get(a.get("url", ""), {}))
                 for a in ok_audits]
         n_hot = sum(1 for o in opps if o >= 65)
         k1, k2, k3 = st.columns(3)
@@ -2123,9 +2616,8 @@ elif _view == "exports":
         k2.metric(_t("Hot leads", "Heiße Leads"), n_hot)
         k3.metric(_t("Avg opportunity", "Ø Chance"), round(sum(opps) / len(opps)) if opps else 0)
 
-        csv_bytes = build_leads_csv(
-            ok_audits, st.session_state.get("contacts", {}), st.session_state.get("cdn_map", {}))
-        csv_bytes = _add_contacted_column(csv_bytes, st.session_state.get("contacted", {}))
+        csv_bytes = build_leads_csv(ok_audits, _exp_contacts, _exp_cdn)
+        csv_bytes = _add_contacted_column(csv_bytes, _exp_contacted)
         st.download_button(
             f"⬇ {_t('Download leads CSV','Leads-CSV herunterladen')}",
             data=csv_bytes, file_name="fastsite_leads.csv", mime="text/csv",
@@ -2163,18 +2655,65 @@ elif _view == "settings":
         f"- {_ok(PREVIEW_API_AVAILABLE)} Preview API"
     )
 
-    st.markdown(f"#### {_t('Session data','Sitzungsdaten')}")
-    st.markdown(
-        f"- {len(st.session_state.get('results', []))} {_t('leads','Leads')}\n"
-        f"- {len(st.session_state.get('audits', {}))} {_t('audits','Audits')}\n"
-        f"- {len(st.session_state.get('history', {}))} {_t('in history','im Verlauf')}\n"
-        f"- {len(st.session_state.get('contacted', {}))} {_t('contacted','kontaktiert')}"
-    )
-    if st.button(f"🧹 {_t('Reset all session data','Alle Sitzungsdaten zurücksetzen')}", key="reset_all"):
-        for k in ["results", "audits", "cdn_map", "tech", "contacts", "contacted", "history", "previews", "engines"]:
-            st.session_state[k] = [] if k in ("results", "engines") else {}
-        st.session_state["detail_url"] = None
-        st.rerun()
+    if STORE_AVAILABLE:
+        st.markdown(f"#### {_t('Team data (shared & persistent)','Teamdaten (geteilt & dauerhaft)')}")
+        try:
+            _c = _store.counts()
+        except Exception:
+            _c = {"total": 0, "contacted": 0, "by_status": {}, "by_owner": {}}
+        d1, d2, d3 = st.columns(3)
+        d1.metric(_t("Total leads", "Leads gesamt"), _c["total"])
+        d2.metric(_t("Contacted", "Kontaktiert"), _c["contacted"])
+        _booked = _c["by_status"].get("booked", 0) + _c["by_status"].get("won", 0)
+        d3.metric(_t("Demos / won", "Demos / gewonnen"), _booked)
+
+        # Pipeline breakdown by status and by rep — the manager's at-a-glance.
+        st.markdown(f"##### {_t('Pipeline by status','Pipeline nach Status')}")
+        _order = ["new", "contacted", "replied", "booked", "won", "lost"]
+        _lbl = {"new": "🆕 New", "contacted": "✉️ Contacted", "replied": "↩️ Replied",
+                "booked": "📅 Booked", "won": "✅ Won", "lost": "❌ Lost"}
+        st.dataframe(pd.DataFrame(
+            [{"Status": _lbl.get(s, s), "Leads": _c["by_status"].get(s, 0)} for s in _order]
+        ), hide_index=True, use_container_width=True)
+
+        if _c["by_owner"]:
+            st.markdown(f"##### {_t('Leads by rep','Leads pro Vertriebler')}")
+            st.dataframe(pd.DataFrame(
+                [{"Rep": k, "Leads": v} for k, v in sorted(_c["by_owner"].items(),
+                                                            key=lambda kv: -kv[1])]
+            ), hide_index=True, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown(f"##### ⚠️ {_t('Danger zone','Gefahrenzone')}")
+        _confirm = st.checkbox(
+            _t("I understand this permanently deletes ALL team leads for everyone.",
+               "Ich verstehe, dass dies ALLE Team-Leads für alle dauerhaft löscht."),
+            key="confirm_wipe")
+        if st.button(f"🗑 {_t('Delete all team data','Alle Teamdaten löschen')}",
+                     key="wipe_store", disabled=not _confirm):
+            try:
+                _store.clear_all()
+            except Exception:
+                pass
+            for k in ["results", "audits", "cdn_map", "tech", "contacts", "contacted", "history", "previews", "engines"]:
+                st.session_state[k] = [] if k in ("results", "engines") else {}
+            st.session_state["detail_url"] = None
+            st.session_state["_store_hydrated"] = False
+            st.rerun()
+    else:
+        st.markdown(f"#### {_t('Session data','Sitzungsdaten')}")
+        st.warning(_t("Persistent store unavailable — data is session-only this run.",
+                      "Dauerhafter Speicher nicht verfügbar — Daten nur für diese Sitzung."))
+        st.markdown(
+            f"- {len(st.session_state.get('audits', {}))} {_t('audits','Audits')}\n"
+            f"- {len(st.session_state.get('history', {}))} {_t('in history','im Verlauf')}\n"
+            f"- {len(st.session_state.get('contacted', {}))} {_t('contacted','kontaktiert')}"
+        )
+        if st.button(f"🧹 {_t('Reset all session data','Alle Sitzungsdaten zurücksetzen')}", key="reset_all"):
+            for k in ["results", "audits", "cdn_map", "tech", "contacts", "contacted", "history", "previews", "engines"]:
+                st.session_state[k] = [] if k in ("results", "engines") else {}
+            st.session_state["detail_url"] = None
+            st.rerun()
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
